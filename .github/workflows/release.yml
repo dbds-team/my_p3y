@@ -75,9 +75,9 @@ jobs:
 
           # Create archive
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip ${BINARY_NAME%.exe}.zip ${BINARY_NAME} LICENSE README.md
+            zip ${BINARY_NAME%.exe}.zip ${BINARY_NAME} README.md
           else
-            tar czf ${BINARY_NAME}.tar.gz ${BINARY_NAME} LICENSE README.md
+            tar czf ${BINARY_NAME}.tar.gz ${BINARY_NAME} README.md
           fi
 
       - name: Upload artifact
