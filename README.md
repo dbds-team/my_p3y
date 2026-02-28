@@ -60,6 +60,7 @@ go build -o p3y .
 | `--username` | `USERNAME` | - | BasicAuth 用户名 |
 | `--password` | `PASSWORD` | - | BasicAuth 密码 |
 | `--tls` | `TLS` | `false` | 启用 TLS |
+| `--tls_mode` | `TLS_MODE` | `standard` | 前端 TLS 模式：`standard`（标准 TLS）或 `gm`（国密 TLS） |
 | `--crt` | `CRT` | `./example.crt` | TLS 证书路径 |
 | `--key` | `KEY` | `./example.key` | TLS 私钥路径 |
 | `--skip-verify` | `SKIP_VERIFY` | `false` | 跳过后端 TLS 验证 |
@@ -89,6 +90,24 @@ go build -o p3y .
 ### 采集配置示例（capture.yaml）
 
 项目根目录已提供 `capture.yaml` 示例，可直接修改并热更新生效。
+
+### 国密 TLS（SM2）示例
+
+```bash
+./p3y \
+  --ip 0.0.0.0 \
+  --port 60001 \
+  --backend https://127.0.0.1:1443 \
+  --skip-verify \
+  --tls \
+  --tls_mode gm \
+  --crt ./ssl/proxy-cert-clean.pem \
+  --key ./ssl/proxy-key-clean.pem
+```
+
+说明：
+- `--tls_mode standard`：仅支持标准 TLS 证书（RSA/ECDSA/Ed25519）
+- `--tls_mode gm`：使用国密 TLS 实现，可加载 SM2 证书
 
 ### 环境变量示例
 

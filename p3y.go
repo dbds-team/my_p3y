@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/tjfoc/gmsm/gmtls"
 	"github.com/txn2/n2proxy/sec"
 	"github.com/yourusername/p3y/internal/capture/collector"
 	captureConfig "github.com/yourusername/p3y/internal/capture/config"
@@ -40,6 +41,7 @@ type Config struct {
 	Username       string
 	Password       string
 	TLS            bool
+	TLSMode        string
 	TLSCfgFile     string
 	Certificate    string
 	Key            string
@@ -185,6 +187,7 @@ func ConfigFromEnvAndFlags() *Config {
 		Username:       getEnv("USERNAME", ""),
 		Password:       getEnv("PASSWORD", ""),
 		TLS:            parseBool(getEnv("TLS", "false")),
+		TLSMode:        getEnv("TLS_MODE", "standard"),
 		TLSCfgFile:     getEnv("TLSCFG", ""),
 		Certificate:    getEnv("CRT", "./example.crt"),
 		Key:            getEnv("KEY", "./example.key"),
@@ -208,6 +211,7 @@ func ConfigFromEnvAndFlags() *Config {
 	flag.StringVar(&cfg.Username, "username", cfg.Username, "BasicAuth username.")
 	flag.StringVar(&cfg.Password, "password", cfg.Password, "BasicAuth password.")
 	flag.BoolVar(&cfg.TLS, "tls", cfg.TLS, "Enable TLS (requires crt and key).")
+	flag.StringVar(&cfg.TLSMode, "tls_mode", cfg.TLSMode, "TLS mode for frontend listener: standard|gm")
 	flag.StringVar(&cfg.TLSCfgFile, "tlsCfg", cfg.TLSCfgFile, "TLS config file path.")
 	flag.StringVar(&cfg.Certificate, "crt", cfg.Certificate, "Path to cert file.")
 	flag.StringVar(&cfg.Key, "key", cfg.Key, "Path to private key file.")
@@ -223,6 +227,7 @@ func ConfigFromEnvAndFlags() *Config {
 		fmt.Printf("Version: %s\n", Version)
 		os.Exit(0)
 	}
+	cfg.TLSMode = normalizeTLSMode(cfg.TLSMode)
 
 	return cfg
 }
@@ -379,14 +384,30 @@ func StartProxyServer(ctx context.Context, cfg *Config, proxy *Proxy, auth *Basi
 		zap.String("addr", srv.Addr),
 		zap.String("backend", cfg.Backend),
 		zap.Bool("tls", cfg.TLS),
+		zap.String("tls_mode", cfg.TLSMode),
 	)
 
 	if !cfg.TLS {
 		return srv.ListenAndServe()
 	}
 
-	tlsCfg := sec.GenericTLSConfig()
+	if cfg.TLSMode == "gm" {
+		gmCert, err := gmtls.LoadGMX509KeyPair(cfg.Certificate, cfg.Key)
+		if err != nil {
+			return fmt.Errorf("failed to load GM cert/key pair: %w", err)
+		}
+		gmCfg := &gmtls.Config{
+			GMSupport:    gmtls.NewGMSupport(),
+			Certificates: []gmtls.Certificate{gmCert},
+		}
+		ln, err := gmtls.Listen("tcp", srv.Addr, gmCfg)
+		if err != nil {
+			return fmt.Errorf("failed to start GM TLS listener: %w", err)
+		}
+		return srv.Serve(ln)
+	}
 
+	tlsCfg := sec.GenericTLSConfig()
 	if cfg.TLSCfgFile != "" {
 		logger.Info("loading_tls_config", zap.String("file", cfg.TLSCfgFile))
 		var err error
@@ -403,7 +424,7 @@ func StartProxyServer(ctx context.Context, cfg *Config, proxy *Proxy, auth *Basi
 
 	err := srv.ListenAndServeTLS(cfg.Certificate, cfg.Key)
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "unsupported elliptic curve") {
-		return fmt.Errorf("failed to load TLS cert/key: unsupported elliptic curve; please use RSA or P-256 cert/key in PEM format: %w", err)
+		return fmt.Errorf("failed to load TLS cert/key: unsupported elliptic curve for standard mode; try -tls_mode gm for SM2 certificates: %w", err)
 	}
 	return err
 }
@@ -494,4 +515,16 @@ func parseInt(s string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+func normalizeTLSMode(s string) string {
+	mode := strings.ToLower(strings.TrimSpace(s))
+	switch mode {
+	case "", "standard":
+		return "standard"
+	case "gm":
+		return "gm"
+	default:
+		return "standard"
+	}
 }
