@@ -1,0 +1,63 @@
+enabled: true
+store:
+  db_path: ./capture.db
+filter:
+  static_extensions:
+    - .js
+    - .css
+    - .html
+    - .htm
+    - .txt
+    - .json
+    - .xml
+    - .map
+    - .jpg
+    - .jpeg
+    - .png
+    - .gif
+    - .svg
+    - .webp
+    - .ico
+    - .bmp
+    - .pdf
+    - .zip
+    - .rar
+    - .7z
+    - .gz
+    - .tar
+    - .exe
+    - .dll
+    - .bin
+    - .woff
+    - .woff2
+    - .ttf
+    - .otf
+    - .eot
+    - .mp3
+    - .mp4
+    - .avi
+    - .mov
+  static_bypass_contains: ";"
+  per_url_keep_latest: 10
+  attack_contains:
+    - union select
+    - <script
+    - ../
+    - ..\\
+    - " xp_cmdshell"
+    - " or 1=1"
+    - drop table
+    - sleep(
+    - benchmark(
+    - <img
+    - "javascript:"
+  attack_regex:
+    - '(?i)(?:\\bunion\\b\\s+\\bselect\\b)'
+    - '(?i)(?:\\bor\\b\\s+\\d+=\\d+)'
+    - '(?i)<script[^>]*>'
+    - '(?i)(?:\\.\\./|\\.\\.\\\\)'
+    - '(?i)(?:\\bselect\\b.+\\bfrom\\b)'
+view:
+  path: /captures
+  api_path: /api/captures
+  page_size: 30

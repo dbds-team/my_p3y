@@ -10,6 +10,8 @@
 - ✅ **监控**：集成 Prometheus 指标（请求数、延迟、认证失败等）
 - ✅ **优雅关闭**：支持 SIGINT/SIGTERM 信号优雅关闭
 - ✅ **结构化日志**：使用 Uber Zap 提供高性能结构化日志
+- ✅ **请求采集**：采集 URL / GET / POST 参数到 SQLite（支持过滤规则）
+- ✅ **可视化查看**：内置 `/captures` 页面和 `/api/captures` 接口
 
 ## 快速开始
 
@@ -38,6 +40,9 @@ go build -o p3y .
 
 # 启用 TLS
 ./p3y --backend https://api.example.com --tls --crt ./server.crt --key ./server.key
+
+# 开启请求采集（默认读取 ./capture.yaml，不存在则使用内置默认值）
+./p3y --backend https://api.example.com --captureCfg ./capture.yaml
 ```
 
 ## 配置
@@ -50,6 +55,8 @@ go build -o p3y .
 | `--ip` | `IP` | `0.0.0.0` | 监听 IP 地址 |
 | `--port` | `PORT` | `8080` | 监听端口 |
 | `--metrics_port` | `METRICS_PORT` | `2112` | Prometheus 指标端口 |
+| `--capture_ip` | `CAPTURE_IP` | `127.0.0.1` | 采集展示服务监听 IP |
+| `--capture_port` | `CAPTURE_PORT` | `26001` | 采集展示服务监听端口（`0` 表示关闭） |
 | `--username` | `USERNAME` | - | BasicAuth 用户名 |
 | `--password` | `PASSWORD` | - | BasicAuth 密码 |
 | `--tls` | `TLS` | `false` | 启用 TLS |
@@ -58,6 +65,30 @@ go build -o p3y .
 | `--skip-verify` | `SKIP_VERIFY` | `false` | 跳过后端 TLS 验证 |
 | `--logout` | `LOGOUT` | `stdout` | 日志输出路径 |
 | `--tlsCfg` | `TLSCFG` | - | TLS 配置文件路径 |
+| `--captureCfg` | `CAPTURECFG` | `./capture.yaml` | 请求采集配置文件路径 |
+| `--captureCfgPollSec` | `CAPTURECFG_POLL_SEC` | `5` | 采集配置热加载轮询秒数 |
+
+### 请求采集能力
+
+- 仅采集：`url`、`get_params`、`post_params`
+- 不记录其他 Header 字段
+- SQLite 持久化，默认数据库：`./capture.db`
+- 重启后自动加载历史索引，避免去重状态丢失
+- 展示入口（独立 capture 服务端口）：
+  - HTML: `http://<capture_ip>:<capture_port>/captures`
+  - JSON: `http://<capture_ip>:<capture_port>/api/captures`
+
+### 默认过滤规则
+
+- 静态资源后缀默认过滤（含 `.js/.html/.css/.txt/.jpg/.pdf/.exe` 等常见类型）
+- URL 中包含 `;` 时，跳过静态资源过滤
+- 同 URL + 同参数内容请求会被去重过滤
+- 同 URL 但参数不同保留；每个 URL 默认仅保留最新 10 条
+- 过滤常见攻击字符串和正则模式（SQLi/XSS/LFI 等）
+
+### 采集配置示例（capture.yaml）
+
+项目根目录已提供 `capture.yaml` 示例，可直接修改并热更新生效。
 
 ### 环境变量示例
 

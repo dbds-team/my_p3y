@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/txn2/n2proxy/sec"
+	"github.com/yourusername/p3y/internal/capture/collector"
+	captureConfig "github.com/yourusername/p3y/internal/capture/config"
+	"github.com/yourusername/p3y/internal/capture/store"
+	"github.com/yourusername/p3y/internal/capture/viewer"
 	"go.uber.org/zap"
 )
 
@@ -25,18 +30,23 @@ var Version = "0.0.0"
 
 // Config 统一的配置结构（遵循 SRP 原则）
 type Config struct {
-	Backend     string
-	IP          string
-	Port        string
-	MetricsPort string
-	Username    string
-	Password    string
-	TLS         bool
-	TLSCfgFile  string
-	Certificate string
-	Key         string
-	SkipVerify  bool
-	LogOutput   string
+	Backend        string
+	IP             string
+	Port           string
+	MetricsIP      string
+	MetricsPort    string
+	CaptureIP      string
+	CapturePort    string
+	Username       string
+	Password       string
+	TLS            bool
+	TLSCfgFile     string
+	Certificate    string
+	Key            string
+	SkipVerify     bool
+	LogOutput      string
+	CaptureCfgFile string
+	CaptureCfgPoll int
 }
 
 // Metrics 封装 Prometheus 指标（遵循 SRP 原则）
@@ -53,11 +63,12 @@ type ProxyHandler interface {
 
 // Proxy 反向代理实现
 type Proxy struct {
-	target  *url.URL
-	proxy   *httputil.ReverseProxy
-	logger  *zap.Logger
-	metrics *Metrics
-	auth    *BasicAuthMiddleware
+	target    *url.URL
+	proxy     *httputil.ReverseProxy
+	logger    *zap.Logger
+	metrics   *Metrics
+	auth      *BasicAuthMiddleware
+	collector *collector.Collector
 }
 
 // BasicAuthMiddleware 认证中间件（遵循 SRP 原则）
@@ -97,13 +108,11 @@ func NewBasicAuthMiddleware(username, password string, metrics *Metrics) *BasicA
 // Middleware 认证中间件实现（使用标准库的 BasicAuth）
 func (m *BasicAuthMiddleware) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 如果没有配置认证，直接通过
 		if m.username == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// 使用标准库的 BasicAuth 方法（遵循 KISS 原则）
 		username, password, ok := r.BasicAuth()
 		if !ok || username != m.username || password != m.password {
 			m.metrics.AuthFails.Inc()
@@ -117,7 +126,7 @@ func (m *BasicAuthMiddleware) Middleware(next http.HandlerFunc) http.HandlerFunc
 }
 
 // NewProxy 创建代理实例
-func NewProxy(targetURL *url.URL, logger *zap.Logger, metrics *Metrics, skipVerify bool) *Proxy {
+func NewProxy(targetURL *url.URL, logger *zap.Logger, metrics *Metrics, skipVerify bool, captureCollector *collector.Collector) *Proxy {
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
 	if skipVerify {
@@ -127,10 +136,11 @@ func NewProxy(targetURL *url.URL, logger *zap.Logger, metrics *Metrics, skipVeri
 	}
 
 	return &Proxy{
-		target:  targetURL,
-		proxy:   proxy,
-		logger:  logger,
-		metrics: metrics,
+		target:    targetURL,
+		proxy:     proxy,
+		logger:    logger,
+		metrics:   metrics,
+		collector: captureCollector,
 	}
 }
 
@@ -142,22 +152,19 @@ func (p *Proxy) SetAuth(auth *BasicAuthMiddleware) {
 // ServeHTTP 实现 ProxyHandler 接口
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.metrics.Requests.Inc()
-
 	start := time.Now()
 	reqPath := r.URL.Path
 	reqMethod := r.Method
 
-	// 修改请求的 Host
-	r.Host = p.target.Host
+	if p.collector != nil {
+		p.collector.Process(r)
+	}
 
-	// 转发请求
+	r.Host = p.target.Host
 	p.proxy.ServeHTTP(w, r)
 
-	// 记录延迟
 	latency := time.Since(start)
 	p.metrics.Latency.Observe(float64(latency))
-
-	// 结构化日志
 	p.logger.Info("request_completed",
 		zap.String("method", reqMethod),
 		zap.String("path", reqPath),
@@ -168,24 +175,35 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ConfigFromEnvAndFlags 从环境变量和命令行参数读取配置（遵循 SRP 原则）
 func ConfigFromEnvAndFlags() *Config {
 	cfg := &Config{
-		Backend:     getEnv("BACKEND", "http://example.com:80"),
-		IP:          getEnv("IP", "0.0.0.0"),
-		Port:        getEnv("PORT", "8080"),
-		MetricsPort: getEnv("METRICS_PORT", "2112"),
-		Username:    getEnv("USERNAME", ""),
-		Password:    getEnv("PASSWORD", ""),
-		TLS:         parseBool(getEnv("TLS", "false")),
-		TLSCfgFile:  getEnv("TLSCFG", ""),
-		Certificate: getEnv("CRT", "./example.crt"),
-		Key:         getEnv("KEY", "./example.key"),
-		SkipVerify:  parseBool(getEnv("SKIP_VERIFY", "false")),
-		LogOutput:   getEnv("LOGOUT", "stdout"),
+		Backend:        getEnv("BACKEND", "http://example.com:80"),
+		IP:             getEnv("IP", "0.0.0.0"),
+		MetricsIP:      getEnv("METRICS_IP", ""),
+		Port:           getEnv("PORT", "8080"),
+		MetricsPort:    getEnv("METRICS_PORT", "2112"),
+		CaptureIP:      getEnv("CAPTURE_IP", "127.0.0.1"),
+		CapturePort:    getEnv("CAPTURE_PORT", "26001"),
+		Username:       getEnv("USERNAME", ""),
+		Password:       getEnv("PASSWORD", ""),
+		TLS:            parseBool(getEnv("TLS", "false")),
+		TLSCfgFile:     getEnv("TLSCFG", ""),
+		Certificate:    getEnv("CRT", "./example.crt"),
+		Key:            getEnv("KEY", "./example.key"),
+		SkipVerify:     parseBool(getEnv("SKIP_VERIFY", "false")),
+		LogOutput:      getEnv("LOGOUT", "stdout"),
+		CaptureCfgFile: getEnv("CAPTURECFG", "./capture.yaml"),
+		CaptureCfgPoll: parseInt(getEnv("CAPTURECFG_POLL_SEC", "5"), 5),
 	}
 
-	// 命令行参数覆盖环境变量
+	if cfg.MetricsIP == "" {
+		cfg.MetricsIP = cfg.IP
+	}
+
 	flag.StringVar(&cfg.IP, "ip", cfg.IP, "Server IP address to bind to.")
+	flag.StringVar(&cfg.MetricsIP, "metrics_ip", cfg.MetricsIP, "Metrics server IP address to bind to.")
+	flag.StringVar(&cfg.CaptureIP, "capture_ip", cfg.CaptureIP, "Capture viewer server IP address to bind to.")
 	flag.StringVar(&cfg.Port, "port", cfg.Port, "Server port.")
 	flag.StringVar(&cfg.MetricsPort, "metrics_port", cfg.MetricsPort, "Metrics server port.")
+	flag.StringVar(&cfg.CapturePort, "capture_port", cfg.CapturePort, "Capture viewer server port (set 0 to disable).")
 	flag.StringVar(&cfg.Backend, "backend", cfg.Backend, "Backend server URL.")
 	flag.StringVar(&cfg.Username, "username", cfg.Username, "BasicAuth username.")
 	flag.StringVar(&cfg.Password, "password", cfg.Password, "BasicAuth password.")
@@ -195,6 +213,8 @@ func ConfigFromEnvAndFlags() *Config {
 	flag.StringVar(&cfg.Key, "key", cfg.Key, "Path to private key file.")
 	flag.BoolVar(&cfg.SkipVerify, "skip-verify", cfg.SkipVerify, "Skip backend TLS verification.")
 	flag.StringVar(&cfg.LogOutput, "logout", cfg.LogOutput, "Log output (stdout or file path).")
+	flag.StringVar(&cfg.CaptureCfgFile, "captureCfg", cfg.CaptureCfgFile, "Request capture config file path (includes capture routes).")
+	flag.IntVar(&cfg.CaptureCfgPoll, "captureCfgPollSec", cfg.CaptureCfgPoll, "Capture config reload interval in seconds.")
 
 	version := flag.Bool("version", false, "Display version.")
 	flag.Parse()
@@ -234,7 +254,6 @@ func StartMetricsServer(ctx context.Context, addr string, logger *zap.Logger) *h
 		}
 	}()
 
-	// 优雅关闭
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -247,16 +266,98 @@ func StartMetricsServer(ctx context.Context, addr string, logger *zap.Logger) *h
 	return srv
 }
 
+func StartCaptureServer(ctx context.Context, addr string, captureViewer *viewer.Viewer, logger *zap.Logger) *http.Server {
+	if captureViewer == nil {
+		return nil
+	}
+	mux := http.NewServeMux()
+	captureViewer.RegisterRoutes(mux)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	go func() {
+		logger.Info("starting_capture_server", zap.String("addr", addr))
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("capture_server_error", zap.Error(err))
+		}
+	}()
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("capture_server_shutdown_error", zap.Error(err))
+		}
+	}()
+
+	return srv
+}
+
+func printStartupSummary(cfg *Config, captureCfg captureConfig.CaptureConfig, logger *zap.Logger) {
+	proxyScheme := "http"
+	if cfg.TLS {
+		proxyScheme = "https"
+	}
+
+	logger.Info("startup_routes",
+		zap.String("proxy_bind", cfg.IP+":"+cfg.Port),
+		zap.String("proxy_example", fmt.Sprintf("%s://<host>:%s/", proxyScheme, cfg.Port)),
+		zap.String("metrics_bind", cfg.MetricsIP+":"+cfg.MetricsPort),
+		zap.String("metrics_route", "/metrics"),
+		zap.String("capture_bind", cfg.CaptureIP+":"+cfg.CapturePort),
+		zap.String("capture_html_route", captureCfg.View.Path),
+		zap.String("capture_api_route", captureCfg.View.APIPath),
+	)
+
+	fmt.Printf("Proxy:   %s://<host>:%s (bind %s:%s)\n", proxyScheme, cfg.Port, cfg.IP, cfg.Port)
+	fmt.Printf("Metrics: http://%s:%s/metrics\n", cfg.MetricsIP, cfg.MetricsPort)
+	if cfg.CapturePort == "0" {
+		fmt.Printf("Capture: disabled (capture_port=0)\n")
+		return
+	}
+	fmt.Printf("Capture HTML: http://%s:%s%s\n", cfg.CaptureIP, cfg.CapturePort, captureCfg.View.Path)
+	fmt.Printf("Capture API:  http://%s:%s%s\n", cfg.CaptureIP, cfg.CapturePort, captureCfg.View.APIPath)
+}
+
+func StartCaptureConfigReloader(ctx context.Context, pollSec int, manager *captureConfig.Manager, logger *zap.Logger) {
+	if manager == nil || pollSec <= 0 {
+		return
+	}
+	interval := time.Duration(pollSec) * time.Second
+	ticker := time.NewTicker(interval)
+
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				changed, err := manager.ReloadIfChanged()
+				if err != nil {
+					logger.Warn("capture_config_reload_failed", zap.Error(err))
+					continue
+				}
+				if changed {
+					logger.Info("capture_config_reloaded")
+				}
+			}
+		}
+	}()
+}
+
 // StartProxyServer 启动代理服务器（遵循 SRP 原则）
 func StartProxyServer(ctx context.Context, cfg *Config, proxy *Proxy, auth *BasicAuthMiddleware, logger *zap.Logger) error {
 	mux := http.NewServeMux()
 
-	// 应用中间件
 	handler := http.HandlerFunc(proxy.ServeHTTP)
 	if auth != nil {
 		handler = auth.Middleware(handler)
 	}
-
 	mux.Handle("/", handler)
 
 	srv := &http.Server{
@@ -264,7 +365,6 @@ func StartProxyServer(ctx context.Context, cfg *Config, proxy *Proxy, auth *Basi
 		Handler: mux,
 	}
 
-	// 优雅关闭
 	go func() {
 		<-ctx.Done()
 		logger.Info("shutting_down_proxy_server")
@@ -281,12 +381,10 @@ func StartProxyServer(ctx context.Context, cfg *Config, proxy *Proxy, auth *Basi
 		zap.Bool("tls", cfg.TLS),
 	)
 
-	// 启动服务器
 	if !cfg.TLS {
 		return srv.ListenAndServe()
 	}
 
-	// TLS 模式
 	tlsCfg := sec.GenericTLSConfig()
 
 	if cfg.TLSCfgFile != "" {
@@ -303,14 +401,16 @@ func StartProxyServer(ctx context.Context, cfg *Config, proxy *Proxy, auth *Basi
 	srv.TLSConfig = tlsCfg
 	srv.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
 
-	return srv.ListenAndServeTLS(cfg.Certificate, cfg.Key)
+	err := srv.ListenAndServeTLS(cfg.Certificate, cfg.Key)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "unsupported elliptic curve") {
+		return fmt.Errorf("failed to load TLS cert/key: unsupported elliptic curve; please use RSA or P-256 cert/key in PEM format: %w", err)
+	}
+	return err
 }
 
 func main() {
-	// 读取配置
 	cfg := ConfigFromEnvAndFlags()
 
-	// 初始化日志
 	logger, err := InitLogger(cfg.LogOutput)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
@@ -318,33 +418,46 @@ func main() {
 	}
 	defer logger.Sync()
 
-	// 解析后端 URL
 	targetURL, err := url.Parse(cfg.Backend)
 	if err != nil {
 		logger.Fatal("invalid_backend_url", zap.Error(err))
 	}
 
-	// 创建指标
 	metrics := NewMetrics()
-
-	// 创建上下文用于优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	StartMetricsServer(ctx, cfg.MetricsIP+":"+cfg.MetricsPort, logger)
 
-	// 启动指标服务器
-	StartMetricsServer(ctx, cfg.IP+":"+cfg.MetricsPort, logger)
+	captureCfgManager, err := captureConfig.NewManager(cfg.CaptureCfgFile)
+	if err != nil {
+		logger.Fatal("capture_config_init_failed", zap.Error(err))
+	}
+	StartCaptureConfigReloader(ctx, cfg.CaptureCfgPoll, captureCfgManager, logger)
 
-	// 创建代理
-	proxy := NewProxy(targetURL, logger, metrics, cfg.SkipVerify)
+	captureStore, err := store.NewSQLiteStore(captureCfgManager.Current().Store.DBPath)
+	if err != nil {
+		logger.Fatal("capture_store_init_failed", zap.Error(err))
+	}
+	defer captureStore.Close()
 
-	// 设置认证（如果配置了）
+	captureCollector := collector.New(captureCfgManager, captureStore, logger)
+	captureViewer, err := viewer.New(captureStore, captureCfgManager)
+	if err != nil {
+		logger.Fatal("capture_viewer_init_failed", zap.Error(err))
+	}
+	printStartupSummary(cfg, captureCfgManager.Current(), logger)
+	if cfg.CapturePort != "0" {
+		StartCaptureServer(ctx, cfg.CaptureIP+":"+cfg.CapturePort, captureViewer, logger)
+	}
+
+	proxy := NewProxy(targetURL, logger, metrics, cfg.SkipVerify, captureCollector)
+
 	var auth *BasicAuthMiddleware
 	if cfg.Username != "" {
 		auth = NewBasicAuthMiddleware(cfg.Username, cfg.Password, metrics)
 		proxy.SetAuth(auth)
 	}
 
-	// 监听系统信号实现优雅关闭
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -354,7 +467,6 @@ func main() {
 		cancel()
 	}()
 
-	// 启动代理服务器
 	if err := StartProxyServer(ctx, cfg, proxy, auth, logger); err != nil && err != http.ErrServerClosed {
 		logger.Fatal("proxy_server_error", zap.Error(err))
 	}
@@ -374,4 +486,12 @@ func getEnv(key, fallback string) string {
 func parseBool(s string) bool {
 	b, _ := strconv.ParseBool(s)
 	return b
+}
+
+func parseInt(s string, fallback int) int {
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return fallback
+	}
+	return v
 }
