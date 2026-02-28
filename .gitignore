@@ -36,11 +36,5 @@ Thumbs.db
 .env
 .env.local
 
-# Certificates (example files)
-*.crt
-*.key
-*.pem
-ssl/
-
 # Local runtime artifacts
 capture.db

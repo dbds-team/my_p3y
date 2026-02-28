@@ -1,0 +1,2 @@
+# p3y startup command (frontend TLS cert extracted from server.pfx alias2)
+./p3y -ip 0.0.0.0 -port 60001 -backend https://127.0.0.1:1443 -skip-verify -capture_ip 0.0.0.0 -capture_port 60002 -tls -tls_mode standard -crt ./ssl/proxy-cert-from-server-pfx.pem -key ./ssl/proxy-key-from-server-pfx.pem
