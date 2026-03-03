@@ -26,11 +26,13 @@ type Deduper interface {
 }
 
 type Engine struct {
-	extensions map[string]struct{}
-	bypassMark string
-	contains   []string
-	patterns   []*regexp.Regexp
-	deduper    Deduper
+	extensions    map[string]struct{}
+	bypassMark    string
+	pathIncludes  []string
+	statusExclude map[int]struct{}
+	contains      []string
+	patterns      []*regexp.Regexp
+	deduper       Deduper
 }
 
 func NewEngine(cfg config.FilterConfig, deduper Deduper) (*Engine, error) {
@@ -67,18 +69,42 @@ func NewEngine(cfg config.FilterConfig, deduper Deduper) (*Engine, error) {
 		patterns = append(patterns, re)
 	}
 
+	statusExclude := make(map[int]struct{}, len(cfg.ResponseStatusExclude))
+	for _, sc := range cfg.ResponseStatusExclude {
+		if sc > 0 {
+			statusExclude[sc] = struct{}{}
+		}
+	}
+
+	pathIncludes := make([]string, 0, len(cfg.PathIncludeKeywords))
+	for _, kw := range cfg.PathIncludeKeywords {
+		kw = strings.ToLower(strings.TrimSpace(kw))
+		if kw != "" {
+			pathIncludes = append(pathIncludes, kw)
+		}
+	}
+
 	return &Engine{
-		extensions: extensions,
-		bypassMark: cfg.StaticBypassContains,
-		contains:   contains,
-		patterns:   patterns,
-		deduper:    deduper,
+		extensions:    extensions,
+		bypassMark:    cfg.StaticBypassContains,
+		pathIncludes:  pathIncludes,
+		statusExclude: statusExclude,
+		contains:      contains,
+		patterns:      patterns,
+		deduper:       deduper,
 	}, nil
 }
 
-func (e *Engine) Evaluate(d RequestData) Decision {
+func (e *Engine) Evaluate(d RequestData, statusCode int) Decision {
+	if _, excluded := e.statusExclude[statusCode]; excluded {
+		return Decision{Keep: false, Reason: "response_status_excluded"}
+	}
+
 	if e.isStaticPath(d.Path, d.URL) {
 		return Decision{Keep: false, Reason: "static_resource"}
+	}
+	if !e.pathIncluded(d.Path) {
+		return Decision{Keep: false, Reason: "path_not_included"}
 	}
 
 	if e.containsAttackPayload(d.URL + " " + d.Query + " " + d.PostParams) {
@@ -114,6 +140,19 @@ func (e *Engine) containsAttackPayload(payload string) bool {
 	}
 	for _, re := range e.patterns {
 		if re.MatchString(payload) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) pathIncluded(path string) bool {
+	if len(e.pathIncludes) == 0 {
+		return true
+	}
+	path = strings.ToLower(path)
+	for _, kw := range e.pathIncludes {
+		if strings.Contains(path, kw) {
 			return true
 		}
 	}

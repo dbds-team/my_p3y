@@ -85,6 +85,8 @@ go build -o p3y .
 - URL 中包含 `;` 时，跳过静态资源过滤
 - 同 URL + 同参数内容请求会被去重过滤
 - 同 URL 但参数不同保留；每个 URL 默认仅保留最新 10 条
+- 默认过滤响应码为 `404` 和 `302` 的请求（可在 `capture.yaml` 配置）
+- 默认仅记录路径包含 `cssp`、`fort`、`isomp-protocol` 的请求（可在 `path_include_keywords` 配置）
 - 过滤常见攻击字符串和正则模式（SQLi/XSS/LFI 等）
 
 ### 采集配置示例（capture.yaml）

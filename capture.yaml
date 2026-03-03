@@ -39,6 +39,13 @@ filter:
     - .mov
   static_bypass_contains: ";"
   per_url_keep_latest: 10
+  path_include_keywords:
+    - cssp
+    - fort
+    - isomp-protocol
+  response_status_exclude:
+    - 404
+    - 302
   attack_contains:
     - union select
     - <script

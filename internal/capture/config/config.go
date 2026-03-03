@@ -23,11 +23,13 @@ type StoreConfig struct {
 }
 
 type FilterConfig struct {
-	StaticExtensions     []string `yaml:"static_extensions"`
-	StaticBypassContains string   `yaml:"static_bypass_contains"`
-	PerURLKeepLatest     int      `yaml:"per_url_keep_latest"`
-	AttackContains       []string `yaml:"attack_contains"`
-	AttackRegex          []string `yaml:"attack_regex"`
+	StaticExtensions      []string `yaml:"static_extensions"`
+	StaticBypassContains  string   `yaml:"static_bypass_contains"`
+	PerURLKeepLatest      int      `yaml:"per_url_keep_latest"`
+	PathIncludeKeywords   []string `yaml:"path_include_keywords"`
+	ResponseStatusExclude []int    `yaml:"response_status_exclude"`
+	AttackContains        []string `yaml:"attack_contains"`
+	AttackRegex           []string `yaml:"attack_regex"`
 }
 
 type ViewConfig struct {
@@ -47,8 +49,10 @@ func Default() CaptureConfig {
 				".pdf", ".zip", ".rar", ".7z", ".gz", ".tar", ".exe", ".dll", ".bin",
 				".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp3", ".mp4", ".avi", ".mov",
 			},
-			StaticBypassContains: ";",
-			PerURLKeepLatest:     10,
+			StaticBypassContains:  ";",
+			PerURLKeepLatest:      10,
+			PathIncludeKeywords:   []string{"cssp", "fort", "isomp-protocol"},
+			ResponseStatusExclude: []int{404, 302},
 			AttackContains: []string{
 				"union select", "<script", "../", "..\\", " xp_cmdshell", " or 1=1",
 				"drop table", "sleep(", "benchmark(", "<img", "javascript:",

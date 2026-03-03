@@ -31,15 +31,22 @@ func New(cfgManager *config.Manager, st *store.SQLiteStore, logger *zap.Logger) 
 	return &Collector{cfgManager: cfgManager, store: st, logger: logger}
 }
 
-func (c *Collector) Process(r *http.Request) {
-	cfg := c.cfgManager.Current()
-	if !cfg.Enabled {
-		return
-	}
-
+func (c *Collector) Extract(r *http.Request) *CapturedRequest {
 	rd, err := extractRequestData(r)
 	if err != nil {
 		c.logger.Warn("capture_extract_failed", zap.Error(err))
+		return nil
+	}
+	return &rd
+}
+
+func (c *Collector) Record(rd *CapturedRequest, statusCode int) {
+	if rd == nil {
+		return
+	}
+
+	cfg := c.cfgManager.Current()
+	if !cfg.Enabled {
 		return
 	}
 
@@ -55,9 +62,9 @@ func (c *Collector) Process(r *http.Request) {
 		Query:      rd.GetParams,
 		PostParams: rd.PostParams,
 		UniqueKey:  rd.UniqueKey,
-	})
+	}, statusCode)
 	if !decision.Keep {
-		c.logger.Debug("capture_filtered", zap.String("reason", decision.Reason), zap.String("url", rd.URL))
+		c.logger.Debug("capture_filtered", zap.String("reason", decision.Reason), zap.String("url", rd.URL), zap.Int("status", statusCode))
 		return
 	}
 
@@ -100,7 +107,7 @@ func (c *Collector) getEngine(filterCfg config.FilterConfig) (*filter.Engine, er
 	return engine, nil
 }
 
-type requestData struct {
+type CapturedRequest struct {
 	URL        string
 	Path       string
 	GetParams  string
@@ -108,7 +115,7 @@ type requestData struct {
 	UniqueKey  string
 }
 
-func extractRequestData(r *http.Request) (requestData, error) {
+func extractRequestData(r *http.Request) (CapturedRequest, error) {
 	fullURL := r.URL.Path
 	if r.URL.RawQuery != "" {
 		fullURL += "?" + r.URL.RawQuery
@@ -122,18 +129,18 @@ func extractRequestData(r *http.Request) (requestData, error) {
 		if strings.Contains(ct, "application/x-www-form-urlencoded") {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				return requestData{}, fmt.Errorf("read form body: %w", err)
+				return CapturedRequest{}, fmt.Errorf("read form body: %w", err)
 			}
 			r.Body = io.NopCloser(strings.NewReader(string(body)))
 			vals, err := url.ParseQuery(string(body))
 			if err != nil {
-				return requestData{}, fmt.Errorf("parse form body: %w", err)
+				return CapturedRequest{}, fmt.Errorf("parse form body: %w", err)
 			}
 			postParams = normalizeValues(vals)
 		} else {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				return requestData{}, fmt.Errorf("read body: %w", err)
+				return CapturedRequest{}, fmt.Errorf("read body: %w", err)
 			}
 			r.Body = io.NopCloser(strings.NewReader(string(body)))
 			trimmed := strings.TrimSpace(string(body))
@@ -146,7 +153,7 @@ func extractRequestData(r *http.Request) (requestData, error) {
 	keyInput := r.URL.Path + "|" + getParams + "|" + postParams
 	sum := sha256.Sum256([]byte(keyInput))
 
-	return requestData{
+	return CapturedRequest{
 		URL:        fullURL,
 		Path:       r.URL.Path,
 		GetParams:  getParams,

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -158,12 +160,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reqPath := r.URL.Path
 	reqMethod := r.Method
 
+	var captured *collector.CapturedRequest
 	if p.collector != nil {
-		p.collector.Process(r)
+		captured = p.collector.Extract(r)
 	}
 
 	r.Host = p.target.Host
-	p.proxy.ServeHTTP(w, r)
+	statusWriter := newStatusRecorder(w)
+	p.proxy.ServeHTTP(statusWriter, r)
+	if p.collector != nil {
+		p.collector.Record(captured, statusWriter.StatusCode())
+	}
 
 	latency := time.Since(start)
 	p.metrics.Latency.Observe(float64(latency))
@@ -172,6 +179,44 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		zap.String("path", reqPath),
 		zap.Duration("latency", latency),
 	)
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func newStatusRecorder(w http.ResponseWriter) *statusRecorder {
+	return &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+}
+
+func (w *statusRecorder) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusRecorder) StatusCode() int {
+	return w.statusCode
+}
+
+func (w *statusRecorder) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("hijacker not supported")
+}
+
+func (w *statusRecorder) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
 }
 
 // ConfigFromEnvAndFlags 从环境变量和命令行参数读取配置（遵循 SRP 原则）
